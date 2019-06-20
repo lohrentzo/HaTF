@@ -1,0 +1,91 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedLists     #-}
+
+module Bum
+    ( runCalc
+    ) where
+
+import Control.Monad (replicateM_)
+import Control.Monad.Reader
+import qualified Data.Vector as V
+import Data.Vector (Vector)
+import TensorFlow.Core
+  (Tensor, Value, feed, encodeTensorData, Scalar(..), ControlNode, Build)
+import TensorFlow.Ops
+  (add, placeholder, sub, reduceSum, mul)
+import TensorFlow.GenOps.Core (square)
+import TensorFlow.Variable (readValue, initializedVariable, Variable)
+import TensorFlow.Session (runSession, run, runWithFeeds, build)
+import TensorFlow.Minimize (gradientDescent, minimizeWith)
+
+data Model = Model {
+      prediction :: Tensor Build Float
+    , trainStep  :: ControlNode
+}
+
+data Env = Env {
+      xInput     :: Vector Float
+    , yInput     :: Vector Float
+    , wVar       :: Variable Float
+    , bVar       :: Variable Float
+    , xPHolder   :: Tensor Value Float
+    , yPHolder   :: Tensor Value Float
+}
+
+-- type App = ReaderT Env Build
+
+createModel :: ReaderT Env Build Model
+createModel = do
+  env <- ask
+
+  let linearModel = (readValue (wVar env) `mul` xPHolder env) `add` readValue (bVar env)
+
+  let squareDeltas = square (linearModel `sub` yPHolder env)
+  let loss = reduceSum squareDeltas
+
+  tStep <- lift $ minimizeWith (gradientDescent 0.01) loss [wVar env, bVar env]
+
+  return Model {prediction=linearModel, trainStep=tStep}
+
+basicExample :: Vector Float -> Vector Float -> IO (Float, Float)
+basicExample xIn yIn = runSession $ do
+    let xSize = fromIntegral $ V.length xIn
+    let ySize = fromIntegral $ V.length yIn
+
+    (w :: Variable Float) <- initializedVariable 3
+    (b :: Variable Float) <- initializedVariable 1
+
+    (x :: Tensor Value Float) <- placeholder [xSize]
+    (y :: Tensor Value Float) <- placeholder [ySize]
+    let env = Env {
+            xInput=xIn
+          , yInput=yIn
+          , wVar=w
+          , bVar=b
+          , xPHolder=x
+          , yPHolder=y
+    }
+
+    model <- build $ runReaderT createModel env
+
+    let trainWithFeeds xF yF = runWithFeeds
+            [ feed x xF
+            , feed y yF
+            ]
+            (trainStep model)
+
+    replicateM_ 1000 $
+        trainWithFeeds
+        (encodeTensorData [xSize] xIn)
+        (encodeTensorData [ySize] yIn)
+
+    (Scalar w_learned, Scalar b_learned) <-
+        run (readValue w, readValue b)
+    return (w_learned, b_learned)
+
+runCalc :: IO ()
+runCalc = do
+  let xVec = V.fromList [1.0, 2.0, 3.0, 4.0]
+  let yVec = V.fromList [4.0, 9.0, 14.0, 19.0]
+  results <- basicExample xVec yVec
+  print results

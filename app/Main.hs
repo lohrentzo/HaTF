@@ -1,6 +1,8 @@
 module Main where
 
-import Lib
+import qualified MNIST as M
+import qualified LinearModel as LM
 
 main :: IO ()
-main = someFunc
+main = LM.runCalc
+
